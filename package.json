@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
+    "@thednp/dommatrix": "^2.0.8",
     "node-html-parser": "^6.1.13",
     "pdf-lib": "^1.17.1",
     "puppeteer": "^23.6.0"

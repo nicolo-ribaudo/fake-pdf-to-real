@@ -1,17 +1,15 @@
-import { readFile } from "node:fs/promises";
 import puppeteer from "puppeteer";
-import { parse } from "node-html-parser";
-import { PDFDocument,  } from "pdf-lib";
+import { PDFDocument, asPDFNumber, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
+import DOMMatrix from "@thednp/dommatrix";
+
+import * as browserUtils from "./browser.js";
 
 export class Converter {
   #browserP;
 
   /** @type {import("puppeteer").Page} */
   #page = null;
-
-  /** @type {import("node-html-parser").HTMLElement} */
-  #dom = null;
 
   #processing = false;
 
@@ -30,25 +28,15 @@ export class Converter {
 
     try {
       this.#page ??= await this.#browserP.then((browser) => browser.newPage());
-      this.#page.goto(url);
-
-      this.#dom = parse(await readFile(url, "utf8"));
+      await this.#page.goto(url, { waitUntil: "networkidle2" });
 
       this.#fontFaces.clear();
     } catch {
       await this.#page?.close();
       this.#page = null;
-      this.#dom = null;
     } finally {
       this.#processing = false;
     }
-  }
-
-  looksLikePDF() {
-    if (this.#processing) throw new Error();
-
-    const container = this.#dom.getElementById("page-container");
-    return !!container && !!container.querySelector("> .page");
   }
 
   async convertToPdf(mode = Converter.TRANSPARENT_TEXT) {
@@ -56,21 +44,23 @@ export class Converter {
     this.#processing = true;
 
     try {
+      console.error("Analyzing file...");
+      const pages = await this.#page.evaluate(browserUtils.extractPages);
+      if (!pages) return null;
+
+      console.error(`Converting ${pages.length} pages...`);
+
       const pdf = await PDFDocument.create();
       pdf.registerFontkit(fontkit);
 
-      const promises = [];
+      await Promise.all(
+        pages.map((page) => {
+          const pdfPage = pdf.addPage([page.width, page.height]);
+          return this.#processPage(mode, pdf, pdfPage, page);
+        })
+      );
 
-      const pages = this.#dom.querySelectorAll("#page-container > .page");
-      for (const domPage of pages) {
-        const size = await this.#getElementSize(`#${domPage.id}`);
-        if (size) {
-          const pdfPage = pdf.addPage(size);
-          promises.push(this.#processPage(mode, pdf, pdfPage, domPage, size));
-        }
-      }
-
-      await Promise.all(promises);
+      console.error("\nGenerating PDF file...");
 
       return pdf.save();
     } finally {
@@ -82,110 +72,81 @@ export class Converter {
    * @param {*} mode
    * @param {import("pdf-lib").PDFDocument} pdf
    * @param {import("pdf-lib").PDFPage} pdfPage
-   * @param {import("node-html-parser").HTMLElement} domPage
+   * @param {Object} page
    * @param {[number, number]} size
    */
-  async #processPage(mode, pdf, pdfPage, domPage, size) {
-    const domImg = domPage.querySelector("> .img");
-    if (domImg) {
-      const PREFIX = "data:image/png;base64,";
-      const domImgSrc = domImg.getAttribute("src");
-      if (!domImgSrc.startsWith(PREFIX)) {
-        throw new Error("Unsupported image format");
-      }
-
-      const pdfImg = await pdf.embedPng(domImgSrc);
-      pdfPage.drawImage(pdfImg, { width: size[0], height: size[1] });
-    }
-
-    const domText = domPage.querySelectorAll("> .txt span");
-    for (const [index, domSpan] of domText.entries()) {
-      const element = await this.#page
-        .evaluateHandle(
-          (selector) => document.querySelector(selector),
-          `#${domPage.id} > .txt span:nth-of-type(${index + 1})`
-        )
-        .then((h) => h.asElement());
-      if (!element) continue;
-      const [font, data] = await Promise.all([
-        this.#getElementFont(pdf, element),
-        this.#getTextElementData(element, size[1]),
-      ]);
-
-      pdfPage.drawText(domSpan.textContent, {
-        font,
-        x: data.x,
-        y: data.y,
-        size: data.size,
-        opacity: 0,
+  async #processPage(mode, pdf, pdfPage, page) {
+    for (const image of page.images) {
+      const pdfImg = await pdf.embedPng(image.src);
+      pdfPage.drawImage(pdfImg, {
+        width: image.width,
+        height: image.height,
+        x: image.left,
+        y: image.bottom,
       });
     }
+
+    for (const text of page.text) {
+      const font = await this.#getFont(pdf, text.font);
+
+      pdfPage.drawText(text.text, {
+        font,
+        x: text.left,
+        y: text.bottom,
+        size: text.size,
+        opacity: text.opacity,
+        color:
+          text.color == null
+            ? undefined
+            : rgb(...text.color.map((c) => c / 255)),
+      });
+
+      if (text.transform) {
+        const { operators } = pdfPage.contentStream;
+        for (let i = operators.length - 1; i >= 0; i--) {
+          if (operators[i].name === "q") {
+            break; // PushGraphcsState
+          }
+          if (operators[i].name === "Tm") {
+            const matrix = new DOMMatrix(
+              operators[i].args.map((n) => n.numberValue)
+            ).multiply(new DOMMatrix(text.transform));
+            operators[i].args = [
+              matrix.a,
+              matrix.b,
+              matrix.c,
+              matrix.d,
+              matrix.e,
+              matrix.f,
+            ].map(asPDFNumber);
+            break;
+          }
+        }
+      }
+    }
+
     process.stderr.write(".");
-  }
-
-  #getElementSize(selector) {
-    return this.#page.evaluate((selector) => {
-      const rect = document.querySelector(selector)?.getBoundingClientRect();
-      if (!rect) return null;
-      return [rect.width, rect.height];
-    }, selector);
-  }
-
-  #getTextElementData(elementHandle, height) {
-    return this.#page.evaluate((element, height) => {
-      const style = getComputedStyle(element);
-
-      const span = document.createElement("span");
-      span.setAttribute("style", "font-size:0");
-      span.innerText = "A";
-      element.append(span);
-      const baseline = span.getBoundingClientRect().bottom - element.getBoundingClientRect().bottom;
-      span.remove();
-
-      return {
-        x: parseFloat(style.left),
-        y: height - parseFloat(style.top) - parseFloat(style.fontSize) - baseline,
-        size: parseFloat(style.fontSize),
-      };
-    }, elementHandle, height);
   }
 
   /**
    * @param {import("pdf-lib").PDFDocument} pdf
-   * @param {string} selector
-   * @returns {Promise<import("pdf-lib").PDFFont>}
+   * @param {string} fontFamily
    */
-  async #getElementFont(pdf, elementHandle) {
-    const fontFamily = await this.#page.evaluate((element) => {
-      return getComputedStyle(element).fontFamily;
-    }, elementHandle);
-
+  async #getFont(pdf, fontFamily) {
     if (this.#fontFaces.has(fontFamily)) {
       return this.#fontFaces.get(fontFamily);
     }
 
-    const promise = new Promise(async (resolve, reject) => {
-      let src = await this.#page.evaluate((fontFamily) => {
-        for (const styleSheet of document.styleSheets) {
-          for (const rule of styleSheet.rules) {
-            if (
-              rule instanceof CSSFontFaceRule &&
-              rule.style.getPropertyValue("font-family") === fontFamily
-            ) {
-              return rule.style.getPropertyValue("src");
-            }
-          }
-        }
-        return null;
-      }, fontFamily);
+    const promise = this.#page
+      .evaluate(browserUtils.extractFont, fontFamily)
+      .then((src) => {
+        if (!src || !src.startsWith("url("))
+          throw new Error(`Cannot extract font ${fontFamily} with src ${src}`);
+        src = src.slice("url(".length, -")".length);
+        if (src.startsWith('"') || src.startsWith("'")) src = src.slice(1, -1);
 
-      if (!src || !src.startsWith("url("))
-        throw new Error("Cannot extract font");
-      src = src.slice("url(".length, -")".length);
-      if (src.startsWith('"') || src.startsWith("'")) src = src.slice(1, -1);
-
-      resolve(pdf.embedFont(src));
-    });
+        return pdf.embedFont(src);
+      });
     this.#fontFaces.set(fontFamily, promise);
     return promise;
   }
