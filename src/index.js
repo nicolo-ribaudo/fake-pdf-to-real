@@ -15,8 +15,8 @@ export class Converter {
 
   #fontFaces = new Map();
 
-  static TRANSPARENT_TEXT = Symbol();
-  static VISIBLE_TEXT = Symbol();
+  static FORCE_TEXT = Symbol();
+  static AUTO_TEXT = Symbol();
 
   constructor() {
     this.#browserP = puppeteer.launch();
@@ -89,16 +89,29 @@ export class Converter {
     for (const text of page.text) {
       const font = await this.#getFont(pdf, text.font);
 
+      let opacity = text.opacity;
+      let color =
+        text.color == null ? undefined : rgb(...text.color.map((c) => c / 255));
+
+      if (mode === Converter.FORCE_TEXT) {
+        pdfPage.drawRectangle({
+          x: text.left,
+          y: text.bottom,
+          width: text.width,
+          height: text.height,
+          color: rgb(1, 1, 1),
+        });
+        opacity = 1;
+        color = rgb(0, 0, 0);
+      }
+
       pdfPage.drawText(text.text, {
         font,
         x: text.left,
         y: text.bottom,
         size: text.size,
-        opacity: text.opacity,
-        color:
-          text.color == null
-            ? undefined
-            : rgb(...text.color.map((c) => c / 255)),
+        opacity: opacity,
+        color,
       });
 
       if (text.transform) {
