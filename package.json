@@ -4,7 +4,7 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "esbuild ./src/main.js --bundle --format=esm --outfile=./web/bundle.js"
   },
   "keywords": [],
   "author": "",
@@ -12,9 +12,9 @@
   "description": "",
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
-    "@thednp/dommatrix": "^2.0.8",
-    "node-html-parser": "^6.1.13",
-    "pdf-lib": "^1.17.1",
-    "puppeteer": "^23.6.0"
+    "pdf-lib": "^1.17.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
   }
 }

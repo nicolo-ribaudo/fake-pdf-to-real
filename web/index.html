@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+    <style>
+      html,
+      body,
+      iframe {
+        margin: 0;
+        padding: 0;
+        border: 0;
+      }
+
+      body {
+        width: 100%;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      iframe {
+        display: block;
+        flex-grow: 1;
+      }
+
+      #controls-container {
+        padding: 0.5em;
+      }
+
+      input {
+        cursor: pointer;
+        font-size: 1em;
+        font-weight: bold;
+      }
+    </style>
+    <script type="module">
+      import { convertToPdf } from "./bundle.js";
+      globalThis.convertToPdf = convertToPdf;
+
+      const $iframe = document.querySelector("iframe");
+      const $upload = document.getElementById("upload");
+      const $convert = document.getElementById("convert");
+      const $output = document.getElementById("output");
+
+      $upload.addEventListener("change", (e) => {
+        const file = $upload.files[0];
+        $upload.setAttribute("disabled", "");
+        $convert.setAttribute("disabled", "");
+        $output.textContent = "";
+        const url = URL.createObjectURL(file);
+        $iframe.addEventListener("load", () => {
+          $convert.removeAttribute("disabled");
+          $upload.removeAttribute("disabled");
+        });
+        $iframe.src = url;
+      });
+
+      $convert.addEventListener("click", async () => {
+        $upload.setAttribute("disabled", "");
+        $convert.setAttribute("disabled", "");
+        try {
+          const pdfBytes = await convertToPdf($iframe.contentDocument.body, log => {
+            $output.textContent = log;
+          });
+          const blob = new Blob([pdfBytes], { type: "application/pdf" });
+          window.open(URL.createObjectURL(blob));
+        } finally {
+          $upload.removeAttribute("disabled");
+          $convert.removeAttribute("disabled");
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <div id="controls-container">
+      <label>File: <input id="upload" type="file" /></label>
+      <script>upload.value = null</script>
+      <input id="convert" type="button" value="Convert" disabled autocomplete="off" value="" />
+      <span id="output"></span>
+    </div>
+
+    <iframe id="fake-pdf"></iframe>
+  </body>
+</html>
